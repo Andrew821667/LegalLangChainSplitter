@@ -4,7 +4,7 @@ import tiktoken
 from datetime import datetime
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
-from app_chunks.splitters.base import BaseSplitter
+from base import BaseSplitter
 
 
 class LegalLangChainSplitter(BaseSplitter):

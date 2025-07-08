@@ -32,7 +32,7 @@ class LegalLangChainSplitter(BaseSplitter):
     }
     
     name = "LangChain Legal"
-    help_text = "Адаптивный LangChain чанкер для правовых документов (с поддержкой токенов)"
+    help_text = "Адаптивный LangChain чанкер для правовых документов"
     
     def __init__(self, config: Dict):
         super().__init__(config)
@@ -55,7 +55,7 @@ class LegalLangChainSplitter(BaseSplitter):
         
         self.recursive_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name=encoding_name,
-            chunk_size=min(self.max_tokens, 800),  # Ограничиваем для лучшего распределения
+            chunk_size=min(self.max_tokens, 800),
             chunk_overlap=self.chunk_overlap,
             separators=["\n\n\n", "\n\n", "\n", ".", " ", ""],
             add_start_index=False,
@@ -67,10 +67,14 @@ class LegalLangChainSplitter(BaseSplitter):
             return 0
         return len(self.tokenizer.encode(text))
 
+
     def _merge_small_chunks(self, documents: List[Document]) -> List[Document]:
         """Объединяет мелкие чанки для достижения минимального размера."""
         if len(documents) <= 1:
-            return documents
+            # Объединяем мелкие чанки
+        documents = self._merge_small_chunks(documents)
+        
+        return documents
         
         optimized_docs = []
         current_doc = None
@@ -154,7 +158,7 @@ class LegalLangChainSplitter(BaseSplitter):
             
             for doc in header_splits:
                 content = doc.page_content
-                if self._count_tokens(content) <= self.max_tokens:
+                if len(self.tokenizer.encode(content)) <= self.max_tokens:
                     final_chunks.append(content)
                 else:
                     sub_chunks = self.recursive_splitter.split_text(content)
@@ -173,7 +177,7 @@ class LegalLangChainSplitter(BaseSplitter):
             return self._adaptive_chunking(text, base_metadata)
     
     def _adaptive_chunking(self, text: str, base_metadata: dict) -> List[Document]:
-        if self._count_tokens(text) < 1000:
+        if len(self.tokenizer.encode(text)) < 1000:
             adaptive_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
                 encoding_name='cl100k_base',
                 chunk_size=600,
@@ -190,11 +194,11 @@ class LegalLangChainSplitter(BaseSplitter):
         documents = []
         
         for i, chunk_text in enumerate(chunks, 1):
-            if self._count_tokens(chunk_text.strip()) < 100:
+            if len(self.tokenizer.encode(chunk_text.strip())) < 100:
                 continue
             
             char_count = len(chunk_text)
-            token_count = self._count_tokens(chunk_text)
+            token_count = len(self.tokenizer.encode(chunk_text))
             ratio = char_count / token_count if token_count > 0 else 0
             
             russian_chars = len(re.findall(r'[А-Яа-яё]', chunk_text))
@@ -213,7 +217,7 @@ class LegalLangChainSplitter(BaseSplitter):
                 "russian_percentage": russian_pct,
                 "artifact_count": artifacts,
                 "high_quality": russian_pct >= 70 and artifacts <= 2,
-                "splitter_type": "langchain_legal_tokens",
+                "splitter_type": "langchain_legal",
                 "size_in_tokens": str(token_count)
             })
             
@@ -223,7 +227,7 @@ class LegalLangChainSplitter(BaseSplitter):
             )
             documents.append(document)
         
-        # ВАЖНО: Объединяем мелкие чанки после создания документов
+        # Объединяем мелкие чанки
         documents = self._merge_small_chunks(documents)
         
         return documents

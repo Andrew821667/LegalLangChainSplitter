@@ -32,7 +32,7 @@ class LegalLangChainSplitter(BaseSplitter):
     }
     
     name = "LangChain Legal"
-    help_text = "Адаптивный LangChain чанкер для правовых документов (с поддержкой токенов)"
+    help_text = "Адаптивный LangChain чанкер для правовых документов"
     
     def __init__(self, config: Dict):
         super().__init__(config)
@@ -55,72 +55,19 @@ class LegalLangChainSplitter(BaseSplitter):
         
         self.recursive_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name=encoding_name,
-            chunk_size=min(self.max_tokens, 800),  # Ограничиваем для лучшего распределения
+            chunk_size=self.max_tokens,
             chunk_overlap=self.chunk_overlap,
             separators=["\n\n\n", "\n\n", "\n", ".", " ", ""],
             add_start_index=False,
         )
     
+
     def _count_tokens(self, text: str) -> int:
         """Подсчет токенов в тексте."""
         if not text:
             return 0
         return len(self.tokenizer.encode(text))
-
-    def _merge_small_chunks(self, documents: List[Document]) -> List[Document]:
-        """Объединяет мелкие чанки для достижения минимального размера."""
-        if len(documents) <= 1:
-            return documents
-        
-        optimized_docs = []
-        current_doc = None
-        
-        for doc in documents:
-            token_count = doc.metadata['token_count']
-            
-            # Если чанк меньше минимального размера
-            if token_count < self.min_tokens:
-                if current_doc is None:
-                    current_doc = doc
-                else:
-                    # Пробуем объединить с предыдущим
-                    combined_content = current_doc.page_content + "\n\n" + doc.page_content
-                    combined_tokens = self._count_tokens(combined_content)
-                    
-                    # Если объединенный чанк не превышает максимум
-                    if combined_tokens <= self.max_tokens:
-                        # Объединяем
-                        combined_metadata = current_doc.metadata.copy()
-                        combined_metadata.update({
-                            'token_count': combined_tokens,
-                            'char_count': len(combined_content),
-                            'char_token_ratio': len(combined_content) / combined_tokens if combined_tokens > 0 else 0,
-                            'in_target_range': self.min_tokens <= combined_tokens <= self.max_tokens,
-                            'merged_from_chunks': f"{current_doc.metadata.get('chunk_number', '?')},{doc.metadata.get('chunk_number', '?')}"
-                        })
-                        
-                        current_doc = Document(
-                            page_content=combined_content,
-                            metadata=combined_metadata
-                        )
-                    else:
-                        # Нельзя объединить - добавляем текущий и начинаем новый
-                        optimized_docs.append(current_doc)
-                        current_doc = doc
-            else:
-                # Чанк нормального размера
-                if current_doc is not None:
-                    optimized_docs.append(current_doc)
-                    current_doc = None
-                optimized_docs.append(doc)
-        
-        # Добавляем последний чанк
-        if current_doc is not None:
-            optimized_docs.append(current_doc)
-        
-        return optimized_docs
-
-    def split(self, metadata: dict, text_to_split: str) -> List[Document]:
+\n    def split(self, metadata: dict, text_to_split: str) -> List[Document]:
         strategy = self._analyze_document_structure(text_to_split)
         
         if strategy == "markdown":
@@ -154,7 +101,7 @@ class LegalLangChainSplitter(BaseSplitter):
             
             for doc in header_splits:
                 content = doc.page_content
-                if self._count_tokens(content) <= self.max_tokens:
+                if len(self.tokenizer.encode(content)) <= self.max_tokens:
                     final_chunks.append(content)
                 else:
                     sub_chunks = self.recursive_splitter.split_text(content)
@@ -173,11 +120,11 @@ class LegalLangChainSplitter(BaseSplitter):
             return self._adaptive_chunking(text, base_metadata)
     
     def _adaptive_chunking(self, text: str, base_metadata: dict) -> List[Document]:
-        if self._count_tokens(text) < 1000:
+        if len(self.tokenizer.encode(text)) < 1000:
             adaptive_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
                 encoding_name='cl100k_base',
-                chunk_size=600,
-                chunk_overlap=100,
+                chunk_size=600,  # Увеличиваем для получения 500+ токенов
+                chunk_overlap=100,  # Больше перекрытие для лучшего распределения
                 separators=["\n\n", "\n", ".", " ", ""],
             )
         else:
@@ -190,11 +137,11 @@ class LegalLangChainSplitter(BaseSplitter):
         documents = []
         
         for i, chunk_text in enumerate(chunks, 1):
-            if self._count_tokens(chunk_text.strip()) < 100:
+            if len(self.tokenizer.encode(chunk_text.strip())) < 100:
                 continue
             
             char_count = len(chunk_text)
-            token_count = self._count_tokens(chunk_text)
+            token_count = len(self.tokenizer.encode(chunk_text))
             ratio = char_count / token_count if token_count > 0 else 0
             
             russian_chars = len(re.findall(r'[А-Яа-яё]', chunk_text))
@@ -213,7 +160,7 @@ class LegalLangChainSplitter(BaseSplitter):
                 "russian_percentage": russian_pct,
                 "artifact_count": artifacts,
                 "high_quality": russian_pct >= 70 and artifacts <= 2,
-                "splitter_type": "langchain_legal_tokens",
+                "splitter_type": "langchain_legal",
                 "size_in_tokens": str(token_count)
             })
             
@@ -223,7 +170,52 @@ class LegalLangChainSplitter(BaseSplitter):
             )
             documents.append(document)
         
-        # ВАЖНО: Объединяем мелкие чанки после создания документов
-        documents = self._merge_small_chunks(documents)
-        
+
+        # Логика объединения мелких чанков
+        if len(documents) > 1:
+            optimized_docs = []
+            current_doc = None
+            
+            for doc in documents:
+                token_count = doc.metadata['token_count']
+                
+                if token_count < 400:  # Мелкий чанк
+                    if current_doc is None:
+                        current_doc = doc
+                    else:
+                        # Объединяем с предыдущим чанком
+                        combined_content = current_doc.page_content + "\n\n" + doc.page_content
+                        combined_tokens = self._count_tokens(combined_content)
+                        
+                        if combined_tokens <= self.max_tokens:
+                            # Объединяем метаданные
+                            combined_metadata = current_doc.metadata.copy()
+                            combined_metadata.update({
+                                'token_count': combined_tokens,
+                                'char_count': len(combined_content),
+                                'char_token_ratio': len(combined_content) / combined_tokens if combined_tokens > 0 else 0,
+                                'in_target_range': self.min_tokens <= combined_tokens <= self.max_tokens
+                            })
+                            
+                            current_doc = Document(
+                                page_content=combined_content,
+                                metadata=combined_metadata
+                            )
+                        else:
+                            # Нельзя объединить, добавляем текущий и начинаем новый
+                            optimized_docs.append(current_doc)
+                            current_doc = doc
+                else:
+                    # Нормальный размер чанка
+                    if current_doc is not None:
+                        optimized_docs.append(current_doc)
+                        current_doc = None
+                    optimized_docs.append(doc)
+            
+            # Добавляем последний чанк если есть
+            if current_doc is not None:
+                optimized_docs.append(current_doc)
+            
+            documents = optimized_docs
+
         return documents
